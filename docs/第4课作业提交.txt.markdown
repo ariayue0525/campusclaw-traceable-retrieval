@@ -1,0 +1,88 @@
+# 第 4 课作业提交：限定班级范围的可追溯知识库检索
+
+## 一、仓库地址（公开）
+
+```
+https://github.com/ariayue0525/campusclaw-traceable-retrieval
+```
+
+- 可见性：PUBLIC
+- 默认分支：master
+- 远程地址（git）：https://github.com/ariayue0525/campusclaw-traceable-retrieval.git
+- 本次变更：OpenSpec `add-traceable-vector-retrieval`，单次提交，未包含 `.env`、证据 txt 与 `node_modules`
+
+## 二、本次变更内容
+
+变更包位于 `openspec/changes/add-traceable-vector-retrieval/`，含 proposal / design / tasks / spec 四件套。
+
+### 1. 检索范围：班级只来自登录会话
+
+`/api/search` 与 `/api/ask` 使用宽松解析读取请求体，但任何客户端传来的 `class_id` 一律丢弃；
+回表取正文、取材料标题、Qdrant 过滤条件均使用会话中的班级。
+
+证据：
+
+- `docs/evidence/15-search-spoofed-class.txt` —— 伪造 `class_id:999` 仍只命中本班
+- `docs/evidence/13-search-cross-class.txt` —— B 班账号检索 A 班内容返回无命中
+
+### 2. 三条检索路径
+
+| 模式 | 路径 | 证据 |
+| --- | --- | --- |
+| `keyword` | MySQL ngram 全文索引 → 回表（不嵌入、不访问向量库） | `09-search-keyword.txt` |
+| `vector` | 问句嵌入 → Qdrant 按班过滤 → 低于阈值丢弃 → 回表 | `10-search-vector.txt` |
+| `hybrid` | 两路各取前 N → RRF 融合（k=60），默认模式 | `11-search-hybrid.txt` |
+
+### 3. 内容溯源
+
+- 命中结果携带 `material_title`、`chunk_index`、`start_offset`、`end_offset`；
+- 问答回答中的 `[1]`、`[2]` 与 `citations` 数组一一对应，可点开查看原文段落；
+- 材料详情「切片与向量」页并排展示 MySQL `knowledge_chunks` 与 Qdrant 的 point
+  （向量主键 = `chunk_id`，`linked` 为 true 表示两库对齐），见 `16-chunk-vectors.txt`。
+
+### 4. 无依据不作答
+
+检索无命中时直接返回固定文案「资料中未找到相关内容」，`citations` 为空数组，
+且不调用生成模型。见 `14-ask-no-evidence.txt`。
+
+### 5. 向量库
+
+Qdrant 运行在 compose 的 internal 网络内，不映射宿主端口；集合 `campusclaw_chunks`
+只存浮点向量与 `class_id` / `material_id` / `chunk_id` 等标识，不存正文。
+未配置 `LLM_GATEWAY_API_KEY` 时使用内置确定性本地嵌入器（无密钥即可启动）；
+配置后自动切换到课程网关的 OpenAI 兼容嵌入与对话接口。
+
+## 三、部署与验收
+
+### 启动
+
+```bash
+cp .env.example .env      # 填好口令后再启动
+docker compose up --build -d
+docker compose ps
+curl -i http://localhost:8080/health
+```
+
+前端入口为 http://localhost:8080/week04/ ，后端 API 由 Nginx 同源代理到 `/api`。
+
+### 验收
+
+```bash
+TEACHER_PASSWORD='你在.env中设置的教师口令' \
+STUDENT_A_PASSWORD='你在.env中设置的学生A口令' \
+STUDENT_B_PASSWORD='你在.env中设置的学生B口令' \
+./scripts/verify.sh
+```
+
+退出码 0，18 项 HTTP 证据落在 `docs/evidence/`。
+后端 `go test ./...`、前端 `npm test` 与 `npm run build` 均通过，
+`openspec validate add-traceable-vector-retrieval --strict` 通过。
+
+## 四、两点说明
+
+1. 默认使用本地哈希嵌入（`EMBED_PROVIDER=local`），无需密钥即可启动；
+   填入 `LLM_GATEWAY_API_KEY` 后自动切换为课程网关的真实语义嵌入与对话。
+   `VECTOR_MIN_SCORE` 按实现给默认值：网关语义嵌入 0.35、本地哈希嵌入 0.15。
+2. 本机部署注意：Docker Hub 直连不通时用 daocloud 镜像源拉取后 `docker tag`；
+   构建加 `DOCKER_BUILDKIT=0`；后端镜像可用 `--build-arg GOPROXY=https://goproxy.cn,direct`。
+   以上均已写入 README。
