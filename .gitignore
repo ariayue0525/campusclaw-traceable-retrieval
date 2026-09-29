@@ -1,0 +1,14 @@
+.env
+.DS_Store
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+coverage/
+data/
+uploads/
+*.db
+*.log
+docs/evidence/*.png
+docs/evidence/*.txt
+!docs/evidence/.gitkeep
+

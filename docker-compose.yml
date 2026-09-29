@@ -1,0 +1,114 @@
+name: campusclaw
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    # ngram 解析器必须固定 2 字切分，否则中文全文索引无法按双字匹配，
+    # 且与向量检索做 RRF 融合时关键字召回率会明显偏低。
+    command: ["--ngram_token_size=2", "--innodb_ft_min_token_size=2", "--ft_min_word_len=2"]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+      start_period: 20s
+
+  # 向量库只挂在 internal 网络：容器内可访问，宿主与公网均不暴露端口。
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    restart: unless-stopped
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+
+  api:
+    build:
+      context: ./backend
+      target: runtime
+    restart: unless-stopped
+    environment:
+      API_ADDR: :8081
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-campusclaw_chunks}
+      EMBED_PROVIDER: ${EMBED_PROVIDER:-local}
+      EMBED_DIM: ${EMBED_DIM:-256}
+      LLM_GATEWAY_BASE_URL: ${LLM_GATEWAY_BASE_URL:-https://ai-gateway.devops.hello1023.com/v1}
+      LLM_GATEWAY_API_KEY: ${LLM_GATEWAY_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      CHAT_MODEL: ${CHAT_MODEL:-gpt-4o-mini}
+      LLM_GATEWAY_TIMEOUT: ${LLM_GATEWAY_TIMEOUT:-20s}
+      # 留空时由后端按嵌入实现选择：网关语义嵌入 0.35，本地哈希嵌入 0.15。
+      VECTOR_MIN_SCORE: ${VECTOR_MIN_SCORE:-}
+      VECTOR_CANDIDATES: ${VECTOR_CANDIDATES:-50}
+      RRF_K: ${RRF_K:-60}
+      SEARCH_LIMIT: ${SEARCH_LIMIT:-10}
+      SEARCH_MAX_LIMIT: ${SEARCH_MAX_LIMIT:-50}
+      ASK_TOP_K: ${ASK_TOP_K:-4}
+      SNIPPET_MAX_CHARS: ${SNIPPET_MAX_CHARS:-240}
+      VECTOR_PREVIEW_DIMS: ${VECTOR_PREVIEW_DIMS:-8}
+      INDEX_MAX_CHUNKS: ${INDEX_MAX_CHUNKS:-400}
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      SESSION_TTL: ${SESSION_TTL:-8h}
+      SESSION_SECURE: ${SESSION_SECURE:-false}
+      UPLOAD_DIR: /data/uploads
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-2097152}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
+      LOGIN_WINDOW: ${LOGIN_WINDOW:-1m}
+      SEED_TEACHER_PASSWORD: ${SEED_TEACHER_PASSWORD:?SEED_TEACHER_PASSWORD is required}
+      SEED_STUDENT_A_PASSWORD: ${SEED_STUDENT_A_PASSWORD:?SEED_STUDENT_A_PASSWORD is required}
+      SEED_STUDENT_B_PASSWORD: ${SEED_STUDENT_B_PASSWORD:?SEED_STUDENT_B_PASSWORD is required}
+    volumes:
+      - uploads_data:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    depends_on:
+      api:
+        condition: service_started
+    networks: [edge, internal]
+
+networks:
+  edge:
+  internal:
+    internal: true
+
+volumes:
+  mysql_data:
+  uploads_data:
+  qdrant_data:
