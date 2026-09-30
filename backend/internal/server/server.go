@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"campusclaw/backend/internal/auth"
 	"campusclaw/backend/internal/chunk"
 	"campusclaw/backend/internal/config"
 	"campusclaw/backend/internal/embed"
@@ -31,7 +30,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const sessionCookie = "campusclaw_session"
+// 凭证通过 Authorization: Bearer <JWT> 传输，浏览器不再持有 Cookie。
+const bearerPrefix = "Bearer "
 
 type userContextKey struct{}
 
@@ -61,6 +61,7 @@ func (s *Server) Handler() http.Handler { return s.securityHeaders(s.mux) }
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /health", func(w http.ResponseWriter,_ *http.Request){ writeJSON(w,http.StatusOK,map[string]string{"status":"ok"}) })
 	s.mux.HandleFunc("POST /api/login",s.login)
+	s.mux.HandleFunc("POST /api/token/refresh",s.refresh)
 	s.mux.Handle("POST /api/logout",s.requireAuth(http.HandlerFunc(s.logout)))
 	s.mux.Handle("GET /api/me",s.requireAuth(http.HandlerFunc(s.me)))
 	s.mux.Handle("GET /api/materials",s.requireAuth(http.HandlerFunc(s.listMaterials)))
@@ -82,11 +83,20 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler { return http.H
 
 func sameOrigin(origin,host string)bool{return strings.HasSuffix(origin,"://"+host)}
 
+// requireAuth 校验 Bearer JWT 后按 sub 回库读取实时身份：
+// 授权（角色、班级）以数据库当前值为准，不信任令牌签发时刻的 payload。
 func (s *Server) requireAuth(next http.Handler) http.Handler { return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-	cookie,err:=r.Cookie(sessionCookie);if err!=nil||cookie.Value==""{writeError(w,http.StatusUnauthorized,"请先登录");return}
-	u,err:=s.store.UserBySession(r.Context(),s.sessionKey(cookie.Value));if errors.Is(err,store.ErrNotFound){s.clearCookie(w);writeError(w,http.StatusUnauthorized,"登录已过期");return};if err!=nil{writeError(w,http.StatusServiceUnavailable,"服务暂时不可用");return}
+	claims,err:=s.bearerClaims(r);if err!=nil{writeError(w,http.StatusUnauthorized,"请先登录");return}
+	u,err:=s.store.UserByID(r.Context(),claims.Sub);if errors.Is(err,store.ErrNotFound){writeError(w,http.StatusUnauthorized,"登录已过期");return};if err!=nil{writeError(w,http.StatusServiceUnavailable,"服务暂时不可用");return}
 	next.ServeHTTP(w,r.WithContext(context.WithValue(r.Context(),userContextKey{},u)))
 })}
+
+// bearerClaims 提取并校验 Authorization: Bearer 头中的 JWT。
+func (s *Server) bearerClaims(r *http.Request) (auth.Claims, error) {
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, bearerPrefix) { return auth.Claims{}, auth.ErrInvalid }
+	return auth.Verify(s.cfg.SessionSecret, strings.TrimPrefix(h, bearerPrefix))
+}
 
 func currentUser(r *http.Request) model.User { return r.Context().Value(userContextKey{}).(model.User) }
 
@@ -97,14 +107,56 @@ func (s *Server) login(w http.ResponseWriter,r *http.Request){
 	u,err:=s.store.UserByUsername(r.Context(),strings.TrimSpace(in.Username));hash:=s.dummyHash;if err==nil{hash=[]byte(u.PasswordHash)}
 	valid:=bcrypt.CompareHashAndPassword(hash,[]byte(in.Password))==nil&&err==nil
 	if !valid{s.recordFailure(key);writeError(w,http.StatusUnauthorized,"用户名或密码错误");return};s.clearFailures(key)
-	token,err:=randomToken();if err!=nil{writeError(w,http.StatusInternalServerError,"登录失败");return}
-	if err=s.store.CreateSession(r.Context(),s.sessionKey(token),u.ID,time.Now().Add(s.cfg.SessionTTL));err!=nil{writeError(w,http.StatusServiceUnavailable,"服务暂时不可用");return}
-	http.SetCookie(w,&http.Cookie{Name:sessionCookie,Value:token,Path:"/",MaxAge:int(s.cfg.SessionTTL.Seconds()),HttpOnly:true,Secure:s.cfg.SessionSecure,SameSite:http.SameSiteLaxMode})
-	writeJSON(w,http.StatusOK,map[string]any{"user":u})
+	if err:=s.issueTokens(r.Context(),w,u);err!=nil{writeError(w,http.StatusServiceUnavailable,"登录失败");return}
 }
 
-func (s *Server) logout(w http.ResponseWriter,r *http.Request){if c,err:=r.Cookie(sessionCookie);err==nil{_ = s.store.DeleteSession(r.Context(),s.sessionKey(c.Value))};s.clearCookie(w);w.WriteHeader(http.StatusNoContent)}
-func (s *Server) clearCookie(w http.ResponseWriter){http.SetCookie(w,&http.Cookie{Name:sessionCookie,Value:"",Path:"/",MaxAge:-1,HttpOnly:true,Secure:s.cfg.SessionSecure,SameSite:http.SameSiteLaxMode})}
+// issueTokens 签发 access JWT（无状态、短时效）与 refresh token（有状态、可吊销），
+// 并按课程示例的结构返回：Authorization 头使用 Bearer + access_token。
+func (s *Server) issueTokens(ctx context.Context, w http.ResponseWriter, u model.User) error {
+	now:=time.Now()
+	access,err:=auth.Sign(s.cfg.SessionSecret,auth.Claims{
+		Sub:u.ID,Username:u.Username,ClassID:u.ClassID,Role:u.Role,
+		IssuedAt:now.Unix(),ExpiresAt:now.Add(s.cfg.TokenTTL).Unix(),
+	})
+	if err!=nil{return err}
+	refresh,err:=randomToken();if err!=nil{return err}
+	if err=s.store.CreateRefreshToken(ctx,refresh,u.ID,now.Add(s.cfg.RefreshTTL));err!=nil{return err}
+	writeJSON(w,http.StatusOK,map[string]any{
+		"token_type":"Bearer","access_token":access,
+		"expires_in":int(s.cfg.TokenTTL.Seconds()),
+		"refresh_token":refresh,"user":u,
+	})
+	return nil
+}
+
+// refresh 用 refresh_token 换取新 token 对；轮换在事务内完成，旧串立即作废。
+func (s *Server) refresh(w http.ResponseWriter,r *http.Request){
+	var in struct{RefreshToken string `json:"refresh_token"`}
+	if err:=decodeLenient(r,&in);err!=nil||strings.TrimSpace(in.RefreshToken)==""{writeError(w,http.StatusBadRequest,"缺少 refresh_token");return}
+	u,err:=s.store.UserByRefreshToken(r.Context(),in.RefreshToken);if errors.Is(err,store.ErrNotFound){writeError(w,http.StatusUnauthorized,"登录已过期，请重新登录");return};if err!=nil{writeError(w,http.StatusServiceUnavailable,"服务暂时不可用");return}
+	newRefresh,err:=randomToken();if err!=nil{writeError(w,http.StatusInternalServerError,"续期失败");return}
+	if err=s.store.RotateRefreshToken(r.Context(),in.RefreshToken,newRefresh,u.ID,time.Now().Add(s.cfg.RefreshTTL));err!=nil{writeError(w,http.StatusServiceUnavailable,"续期失败");return}
+	now:=time.Now()
+	access,err:=auth.Sign(s.cfg.SessionSecret,auth.Claims{
+		Sub:u.ID,Username:u.Username,ClassID:u.ClassID,Role:u.Role,
+		IssuedAt:now.Unix(),ExpiresAt:now.Add(s.cfg.TokenTTL).Unix(),
+	})
+	if err!=nil{writeError(w,http.StatusInternalServerError,"续期失败");return}
+	writeJSON(w,http.StatusOK,map[string]any{
+		"token_type":"Bearer","access_token":access,
+		"expires_in":int(s.cfg.TokenTTL.Seconds()),
+		"refresh_token":newRefresh,"user":u,
+	})
+}
+
+// logout 吊销 refresh token；access token 依赖短时效自然失效，前端同时清空本地凭证。
+func (s *Server) logout(w http.ResponseWriter,r *http.Request){
+	var in struct{RefreshToken string `json:"refresh_token"`}
+	if err:=decodeLenient(r,&in);err==nil&&strings.TrimSpace(in.RefreshToken)!=""{
+		_ = s.store.DeleteRefreshToken(r.Context(),strings.TrimSpace(in.RefreshToken))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 func (s *Server) me(w http.ResponseWriter,r *http.Request){writeJSON(w,http.StatusOK,map[string]any{"user":currentUser(r)})}
 
 func (s *Server) listMaterials(w http.ResponseWriter,r *http.Request){u:=currentUser(r);items,err:=s.store.ListMaterials(r.Context(),u.ClassID,strings.TrimSpace(r.URL.Query().Get("q")));if err!=nil{writeError(w,http.StatusServiceUnavailable,"服务暂时不可用");return};writeJSON(w,http.StatusOK,map[string]any{"materials":items})}
@@ -309,7 +361,6 @@ func readLimited(f multipart.File,max int64)([]byte,error){r:=io.LimitReader(f,m
 func mediaType(ext string)string{if ext==".md"{return "text/markdown; charset=utf-8"};return "text/plain; charset=utf-8"}
 func randomToken()(string,error){b:=make([]byte,32);if _,err:=rand.Read(b);err!=nil{return "",err};return base64.RawURLEncoding.EncodeToString(b),nil}
 func randomStoredName(ext string)(string,error){t,err:=randomToken();if err!=nil{return "",err};return t+ext,nil}
-func (s *Server) sessionKey(token string)string{h:=hmac.New(sha256.New,[]byte(s.cfg.SessionSecret));_,_=h.Write([]byte(token));return base64.RawURLEncoding.EncodeToString(h.Sum(nil))}
 func clientIP(r *http.Request)string{host,_,err:=net.SplitHostPort(r.RemoteAddr);if err==nil{return host};return r.RemoteAddr}
 func (s *Server) rateLimited(key string)bool{s.limiterMu.Lock();defer s.limiterMu.Unlock();e,ok:=s.limiter[key];if !ok||time.Now().After(e.resetAt){delete(s.limiter,key);return false};return e.failures>=s.cfg.LoginMaxFailures}
 func (s *Server) recordFailure(key string){s.limiterMu.Lock();defer s.limiterMu.Unlock();e:=s.limiter[key];if time.Now().After(e.resetAt){e=limiterEntry{resetAt:time.Now().Add(s.cfg.LoginWindow)}};e.failures++;s.limiter[key]=e}

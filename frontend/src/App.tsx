@@ -318,7 +318,7 @@ function Detail({ material, user, onClose, notify }: { material: Material; user:
       </div>
       <button className="primary compact" disabled={busy} onClick={() => void reindex()}>{busy ? '重建中…' : '重新切分并写入向量库'}</button>
     </div>}
-    <div className="drawer-actions"><a className="primary" href={api.fileUrl(material.id)}>↓ 下载原文件</a><button onClick={onClose}>关闭</button></div>
+    <div className="drawer-actions"><button className="primary" onClick={() => api.downloadFile(material.id, material.originalName)}>↓ 下载原文件</button><button onClick={onClose}>关闭</button></div>
   </article></div>
 }
 

@@ -36,6 +36,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS classes (id BIGINT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(80) NOT NULL UNIQUE) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS users (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, username VARCHAR(80) NOT NULL UNIQUE, display_name VARCHAR(80) NOT NULL, role ENUM('teacher','student') NOT NULL, password_hash VARCHAR(255) NOT NULL, FOREIGN KEY (class_id) REFERENCES classes(id), INDEX idx_users_class (class_id)) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS sessions (token_hash BINARY(32) PRIMARY KEY, user_id BIGINT NOT NULL, expires_at DATETIME(6) NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, INDEX idx_sessions_expiry (expires_at)) ENGINE=InnoDB`,
+		// JWT Bearer 方案的 refresh token：库里只存随机串的 SHA-256 摘要。
+		// 轮换在同一事务里删旧写新，重放旧串直接失配。
+		`CREATE TABLE IF NOT EXISTS refresh_tokens (id BIGINT PRIMARY KEY AUTO_INCREMENT, token_hash BINARY(32) NOT NULL UNIQUE, user_id BIGINT NOT NULL, expires_at DATETIME(6) NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE, INDEX idx_refresh_expiry (expires_at)) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS materials (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, uploader_id BIGINT NOT NULL, title VARCHAR(255) NOT NULL, original_name VARCHAR(255) NOT NULL, stored_name VARCHAR(255) NOT NULL UNIQUE, media_type VARCHAR(100) NOT NULL, size_bytes BIGINT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY (class_id) REFERENCES classes(id), FOREIGN KEY (uploader_id) REFERENCES users(id), INDEX idx_materials_class_created (class_id, created_at)) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS knowledge_entries (id BIGINT PRIMARY KEY AUTO_INCREMENT, material_id BIGINT NOT NULL UNIQUE, class_id BIGINT NOT NULL, content MEDIUMTEXT NOT NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY (material_id) REFERENCES materials(id) ON DELETE CASCADE, FOREIGN KEY (class_id) REFERENCES classes(id), INDEX idx_knowledge_class (class_id)) ENGINE=InnoDB`,
 		// 检索的最小单位。正文留在这里，向量库只有同主键的浮点向量。
@@ -81,6 +84,61 @@ func tokenDigest(token string) [32]byte { return sha256.Sum256([]byte(token)) }
 func (s *Store) CreateSession(ctx context.Context, token string, userID int64, expiry time.Time) error { d:=tokenDigest(token); _,err:=s.DB.ExecContext(ctx,`INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)`,d[:],userID,expiry); return err }
 func (s *Store) DeleteSession(ctx context.Context, token string) error { d:=tokenDigest(token); _,err:=s.DB.ExecContext(ctx,`DELETE FROM sessions WHERE token_hash=?`,d[:]); return err }
 func (s *Store) UserBySession(ctx context.Context, token string) (model.User,error) { var u model.User; d:=tokenDigest(token); err:=s.DB.QueryRowContext(ctx,`SELECT u.id,u.username,u.display_name,u.role,u.class_id,c.name,TRIM(TRAILING '班' FROM c.name) FROM sessions s JOIN users u ON u.id=s.user_id JOIN classes c ON c.id=u.class_id WHERE s.token_hash=? AND s.expires_at>NOW(6)`,d[:]).Scan(&u.ID,&u.Username,&u.DisplayName,&u.Role,&u.ClassID,&u.ClassName,&u.ClassCode); if errors.Is(err,sql.ErrNoRows){return u,ErrNotFound}; return u,err }
+
+// ---- JWT Bearer：refresh token 与按 ID 取实时身份 ----
+
+// CreateRefreshToken 落库随机串的 SHA-256 摘要。明文只出现在登录响应里。
+func (s *Store) CreateRefreshToken(ctx context.Context, token string, userID int64, expiry time.Time) error {
+	d := tokenDigest(token)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO refresh_tokens(token_hash,user_id,expires_at) VALUES(?,?,?)`, d[:], userID, expiry)
+	return err
+}
+
+// RotateRefreshToken 在同一事务里删除旧摘要、写入新摘要（轮换）。
+// 旧串重放时查不到记录，直接 401。
+func (s *Store) RotateRefreshToken(ctx context.Context, oldToken, newToken string, userID int64, expiry time.Time) error {
+	old, new_ := tokenDigest(oldToken), tokenDigest(newToken)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil { return err }
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE token_hash=? AND user_id=? AND expires_at>NOW(6)`, old[:], userID)
+	if err != nil { return err }
+	if n, err := res.RowsAffected(); err != nil { return err } else if n != 1 { return ErrNotFound }
+	if _, err := tx.ExecContext(ctx, `INSERT INTO refresh_tokens(token_hash,user_id,expires_at) VALUES(?,?,?)`, new_[:], userID, expiry); err != nil { return err }
+	return tx.Commit()
+}
+
+// DeleteRefreshToken 吊销 refresh token（登出）。
+func (s *Store) DeleteRefreshToken(ctx context.Context, token string) error {
+	d := tokenDigest(token)
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE token_hash=?`, d[:])
+	return err
+}
+
+// UserByRefreshToken 用摘要换取实时用户身份；过期或不存在返回 ErrNotFound。
+func (s *Store) UserByRefreshToken(ctx context.Context, token string) (model.User, error) {
+	var u model.User
+	d := tokenDigest(token)
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT u.id,u.username,u.display_name,u.role,u.class_id,c.name,TRIM(TRAILING '班' FROM c.name)
+		 FROM refresh_tokens r JOIN users u ON u.id=r.user_id JOIN classes c ON c.id=u.class_id
+		 WHERE r.token_hash=? AND r.expires_at>NOW(6)`, d[:]).
+		Scan(&u.ID,&u.Username,&u.DisplayName,&u.Role,&u.ClassID,&u.ClassName,&u.ClassCode)
+	if errors.Is(err, sql.ErrNoRows) { return u, ErrNotFound }
+	return u, err
+}
+
+// UserByID 按主键读取实时身份。JWT 校验通过后调用：授权以数据库当前值为准，
+// 不信任令牌签发时刻写入 payload 的角色与班级。
+func (s *Store) UserByID(ctx context.Context, id int64) (model.User, error) {
+	var u model.User
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT u.id,u.username,u.display_name,u.role,u.class_id,c.name,TRIM(TRAILING '班' FROM c.name)
+		 FROM users u JOIN classes c ON c.id=u.class_id WHERE u.id=?`, id).
+		Scan(&u.ID,&u.Username,&u.DisplayName,&u.Role,&u.ClassID,&u.ClassName,&u.ClassCode)
+	if errors.Is(err, sql.ErrNoRows) { return u, ErrNotFound }
+	return u, err
+}
 
 const materialColumns = `m.id,m.class_id,TRIM(TRAILING '班' FROM c.name),m.uploader_id,u.display_name,m.title,m.original_name,m.stored_name,m.media_type,m.size_bytes,k.content,m.created_at,` +
 	`(SELECT COUNT(*) FROM knowledge_chunks x WHERE x.material_id=m.id),` +

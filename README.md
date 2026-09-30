@@ -47,6 +47,7 @@ docker build --target test -f backend/Dockerfile backend
 # OpenSpec
 openspec validate add-auth-rbac-class-knowledge --strict
 openspec validate add-traceable-vector-retrieval --strict
+openspec validate add-jwt-bearer-auth --strict
 
 # 启动后逐项产生作业证据
 ./scripts/verify.sh

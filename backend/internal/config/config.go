@@ -11,11 +11,14 @@ import (
 // Config 保存进程运行所需的全部设置。检索相关配置项集中在下半部分。
 // 网关密钥只存在于进程内存中，任何 HTTP 响应都不会包含它们。
 type Config struct {
-	Addr             string
-	DatabaseDSN      string
-	SessionSecret    string
-	SessionTTL       time.Duration
-	SessionSecure    bool
+	Addr        string
+	DatabaseDSN string
+	// SessionSecret 复用为 JWT 签名密钥（HS256）。名称保留 SESSION_SECRET，
+	// 避免部署环境里多一套要轮换的密钥。
+	SessionSecret string
+	// TokenTTL 是 access token（JWT）有效期；RefreshTTL 是 refresh token 有效期。
+	TokenTTL   time.Duration
+	RefreshTTL time.Duration
 	UploadDir        string
 	UploadMaxBytes   int64
 	LoginMaxFailures int
@@ -59,16 +62,16 @@ func Load() (Config, error) {
 	if len(os.Getenv("SESSION_SECRET")) < 32 { return Config{}, fmt.Errorf("SESSION_SECRET must contain at least 32 characters") }
 	host := value("MYSQL_HOST", "db")
 	port := value("MYSQL_PORT", "3306")
-	ttl, err := time.ParseDuration(value("SESSION_TTL", "8h"))
-	if err != nil { return Config{}, fmt.Errorf("SESSION_TTL: %w", err) }
+	tokenTTL, err := time.ParseDuration(value("TOKEN_TTL", "30m"))
+	if err != nil || tokenTTL < time.Minute { return Config{}, fmt.Errorf("TOKEN_TTL must be a duration of at least 1m") }
+	refreshTTL, err := time.ParseDuration(value("REFRESH_TTL", "168h"))
+	if err != nil || refreshTTL < tokenTTL { return Config{}, fmt.Errorf("REFRESH_TTL must be a duration no shorter than TOKEN_TTL") }
 	window, err := time.ParseDuration(value("LOGIN_WINDOW", "1m"))
 	if err != nil { return Config{}, fmt.Errorf("LOGIN_WINDOW: %w", err) }
 	maxBytes, err := strconv.ParseInt(value("UPLOAD_MAX_BYTES", "2097152"), 10, 64)
 	if err != nil || maxBytes < 1 { return Config{}, fmt.Errorf("UPLOAD_MAX_BYTES must be positive") }
 	maxFailures, err := strconv.Atoi(value("LOGIN_MAX_FAILURES", "5"))
 	if err != nil || maxFailures < 1 { return Config{}, fmt.Errorf("LOGIN_MAX_FAILURES must be positive") }
-	secure, err := strconv.ParseBool(value("SESSION_SECURE", "false"))
-	if err != nil { return Config{}, fmt.Errorf("SESSION_SECURE: %w", err) }
 
 	// 未显式指定时：配置了网关密钥走网关，否则回退到内置的确定性本地嵌入器，
 	// 保证仓库在没有任何密钥的情况下也能一键启动。
@@ -114,7 +117,7 @@ func Load() (Config, error) {
 	return Config{
 		Addr: value("API_ADDR", ":8081"),
 		DatabaseDSN: fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8mb4&collation=utf8mb4_unicode_ci", os.Getenv("MYSQL_USER"), os.Getenv("MYSQL_PASSWORD"), host, port, os.Getenv("MYSQL_DATABASE")),
-		SessionSecret: os.Getenv("SESSION_SECRET"), SessionTTL: ttl, SessionSecure: secure,
+		SessionSecret: os.Getenv("SESSION_SECRET"), TokenTTL: tokenTTL, RefreshTTL: refreshTTL,
 		UploadDir: value("UPLOAD_DIR", "/data/uploads"), UploadMaxBytes: maxBytes,
 		LoginMaxFailures: maxFailures, LoginWindow: window,
 		SeedTeacherPass: os.Getenv("SEED_TEACHER_PASSWORD"), SeedStudentAPass: os.Getenv("SEED_STUDENT_A_PASSWORD"), SeedStudentBPass: os.Getenv("SEED_STUDENT_B_PASSWORD"),
