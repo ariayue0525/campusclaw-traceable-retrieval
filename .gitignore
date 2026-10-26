@@ -8,6 +8,10 @@ data/
 uploads/
 *.db
 *.log
+apitest/report*.html
+apitest/.tmp/
+apitest/__pycache__/
+apitest/**/__pycache__/
 docs/evidence/*.png
 docs/evidence/*.txt
 !docs/evidence/.gitkeep

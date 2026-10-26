@@ -84,3 +84,4 @@
 .reindex-form .check input{width:16px;height:16px}
 @media(max-width:1050px){.retrieval-hero{grid-template-columns:1fr}.chunk-summary{grid-template-columns:repeat(2,1fr)}.cc-grid{grid-template-columns:1fr}.reindex-form{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.reindex-form,.reindex-form.compact-form{grid-template-columns:1fr}.hit-path{margin-left:0}.hit-ids{margin-left:0}}
+.source-note{margin:0 0 8px;padding:5px 9px;border-radius:7px;background:rgba(143,23,32,.09);color:var(--red);font-size:11px;line-height:1.6}

@@ -73,6 +73,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/materials/{id}/reindex",s.requireAuth(http.HandlerFunc(s.reindexMaterial)))
 	s.mux.Handle("POST /api/search",s.requireAuth(http.HandlerFunc(s.search)))
 	s.mux.Handle("POST /api/ask",s.requireAuth(http.HandlerFunc(s.ask)))
+	s.agentRoutes()
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler { return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){

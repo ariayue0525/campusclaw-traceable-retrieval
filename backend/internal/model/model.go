@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type User struct {
 	ID int64 `json:"id"`
@@ -49,4 +52,51 @@ type Chunk struct {
 	IndexStatus string `json:"indexStatus"`
 	ChunkStrategy string `json:"chunkStrategy"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+type TutorAgent struct {
+	ID          int64     `json:"id"`
+	ClassID     int64     `json:"class_id"`
+	Name        string    `json:"name"`
+	Prompt      string    `json:"prompt"`
+	Enabled     bool      `json:"enabled"`
+	SkillIDs    []int64   `json:"skill_ids"`
+	MaterialIDs []int64   `json:"material_ids"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type Skill struct {
+	ID          int64     `json:"id"`
+	ClassID     int64     `json:"class_id"`
+	Name        string    `json:"name"`
+	TriggerText string    `json:"trigger_text"`
+	SubjectText string    `json:"subject_text"`
+	Description string    `json:"description"`
+	Tools       []string  `json:"tools"`
+	SourceText  string    `json:"source_text"`
+	Enabled     bool      `json:"enabled"`
+	SeedKey     string    `json:"seed_key,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type Conversation struct {
+	ID        int64     `json:"id"`
+	ClassID   int64     `json:"class_id"`
+	UserID    int64     `json:"user_id"`
+	AgentID   int64     `json:"agent_id"`
+	Title     string    `json:"title"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type Message struct {
+	ID             int64           `json:"id"`
+	ConversationID int64           `json:"conversation_id"`
+	Role           string          `json:"role"`
+	Content        string          `json:"content"`
+	Citations      json.RawMessage `json:"citations"`
+	SkillName      string          `json:"skill_name,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
 }

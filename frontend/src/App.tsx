@@ -235,7 +235,7 @@ function AskTab({ user }: { user: User }) {
       {turns.length === 0 && <div className="empty"><b>向本班资料提一个问题</b><div className="examples">{ASK_EXAMPLES.map(e => <button key={e} onClick={() => void run(e)}>{e}</button>)}</div></div>}
       {turns.map((t, i) => t.role === 'user'
         ? <div className="chat-turn user" key={i}><div className="bubble">{t.question}</div></div>
-        : <div className="chat-turn assistant" key={i}><div className="bubble"><AnswerText text={t.result?.answer ?? ''} /></div>{t.result && <CitationList citations={t.result.citations} status={t.result.status} />}</div>)}
+        : <div className="chat-turn assistant" key={i}><div className="bubble">{t.result?.answer_source === 'extract' && <p className="source-note">未连接对话网关，以下为资料原文摘录</p>}<AnswerText text={t.result?.answer ?? ''} /></div>{t.result && <CitationList citations={t.result.citations} status={t.result.status} />}</div>)}
       {busy && <div className="chat-turn assistant"><div className="bubble"><span className="spinner" /> 正在检索本班资料并生成回答…</div></div>}
     </div>
     <form className="ask-form" onSubmit={e => { e.preventDefault(); void run(q) }}>

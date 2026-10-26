@@ -51,6 +51,7 @@ openspec validate add-jwt-bearer-auth --strict
 
 # 启动后逐项产生作业证据
 ./scripts/verify.sh
+
 ```
 
 完整接口、测试账号、作业问题答案与截图方法见 [docs/作业提交说明.md](docs/作业提交说明.md)。
@@ -68,6 +69,36 @@ openspec validate add-jwt-bearer-auth --strict
 班级编号只来自登录会话，请求体里的 `class_id` 一律丢弃；没有命中切片时问答直接返回
 「资料中未找到相关内容」，不调用生成模型。
 
+## 问答与对话网关
+
+`.env` 里的 `LLM_GATEWAY_API_KEY` 决定问答怎么出答案：
+
+| 配置 | 回答来源 | 响应里的 `answer_source` |
+| --- | --- | --- |
+| 填了密钥 | 对话网关依据命中切片生成，带 `[1][2]` 标注 | `chat_gateway` |
+| 留空 / 网关报错 | 服务端按命中切片**原样摘录**，不改写、不补充资料之外的内容 | `extract` |
+
+摘录模式仍然满足「可追溯、不编造」，只是没有经过生成模型组织语言，页面会标注「未连接对话网关」。
+想退回严格行为（网关不可用即 `503`），把 `ASK_EXTRACT_FALLBACK` 设为 `false`。
+
+启用网关后请填：
+
+```bash
+LLM_GATEWAY_API_KEY=<课程网关密钥>
+docker compose up -d api
+```
+
+> **切换嵌入实现要重建向量集合。** 填入密钥后嵌入会由本地哈希嵌入（256 维）切换为网关语义嵌入
+> （默认 1536 维），而 Qdrant 集合的维度不可变。此时需要换集合名或清空数据卷，再对已有材料重建索引：
+>
+> ```bash
+> docker compose down
+> docker volume rm campusclaw_qdrant_data      # 或改 .env 里的 QDRANT_COLLECTION
+> docker compose up -d --build
+> ```
+>
+> 否则启动日志会提示 Qdrant 维度不一致，向量与混合检索返回 `503`，只剩关键字检索可用。
+
 ## 安全边界
 
 - 浏览器只访问 Nginx 暴露的 `8080`；MySQL、Qdrant 与上传目录都在 internal 网络内，不映射宿主端口。
@@ -75,4 +106,3 @@ openspec validate add-jwt-bearer-auth --strict
 - 账号不存在与口令错误统一返回 `401 {"error":"用户名或密码错误"}`。
 - `/health` 只表示进程存活，不查询数据库；数据库不可用时业务接口返回 `503`。
 - 密码只以 bcrypt 哈希存储；`.env`、数据库文件与上传文件均不提交 Git。
-

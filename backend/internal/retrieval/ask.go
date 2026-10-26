@@ -24,7 +24,16 @@ type AskResult struct {
 	Status    string     `json:"status"`
 	Citations []Citation `json:"citations"`
 	Mode      string     `json:"mode"`
+	// AnswerSource 说明这段回答是怎么来的：由对话网关生成，还是服务端直接摘录切片。
+	// 页面据此展示不同的提示，避免把摘录误当成模型结论。
+	AnswerSource string `json:"answer_source"`
 }
+
+// 回答来源的取值。
+const (
+	SourceChatGateway = "chat_gateway" // 对话网关依据切片生成
+	SourceExtract     = "extract"      // 网关不可用时，服务端直接摘录命中的切片
+)
 
 // Turn 是历史对话中的一轮。role 为 system 的消息在解析阶段就被丢弃，不会到达这里。
 type Turn struct {
@@ -56,27 +65,74 @@ func CitationsFrom(hits []Hit) []Citation {
 // 不调用对话网关，也不构造任何提示词。
 func (s *Service) Ask(ctx context.Context, classID int64, question string, history []Turn, topK int, chat Answerer) (*AskResult, error) {
 	question = strings.TrimSpace(question)
-	if question == "" { return nil, ErrBadQuery }
-	if topK < 1 { topK = s.cfg.AskTopK }
+	if question == "" {
+		return nil, ErrBadQuery
+	}
+	if topK < 1 {
+		topK = s.cfg.AskTopK
+	}
 
 	result, err := s.Search(ctx, classID, question, ModeHybrid, topK, 0)
-	if err != nil { return nil, err }
-	return compose(ctx, result.Hits, question, history, chat)
+	if err != nil {
+		return nil, err
+	}
+	opts := composeOptions{allowExtract: s.cfg.AskExtractFallback}
+	return compose(ctx, result.Hits, question, history, chat, opts)
+}
+
+// composeOptions 只带影响降级行为的开关，便于在测试中隔离验证。
+type composeOptions struct {
+	// allowExtract 为 true 时，对话网关不可用不再直接报错，
+	// 而是退回「按命中切片原样摘录」的回答，仍然带 [1]、[2] 出处。
+	allowExtract bool
 }
 
 // compose 决定「要不要问模型」：没有命中切片时请求到此为止，
 // 编排层因此可以在单元测试里验证生成模型确实没有被调用。
-func compose(ctx context.Context, hits []Hit, question string, history []Turn, chat Answerer) (*AskResult, error) {
+func compose(ctx context.Context, hits []Hit, question string, history []Turn, chat Answerer, opts composeOptions) (*AskResult, error) {
 	if len(hits) == 0 {
 		// 无依据：请求在检索之后即结束，生成模型不会被触发。
-		return &AskResult{Answer: NoEvidenceMessage, Status: "no_evidence", Citations: []Citation{}, Mode: string(ModeHybrid)}, nil
+		return &AskResult{Answer: NoEvidenceMessage, Status: "no_evidence", Citations: []Citation{}, Mode: string(ModeHybrid), AnswerSource: SourceExtract}, nil
 	}
 	citations := CitationsFrom(hits)
-	if chat == nil { return nil, ErrAnswerUnavailable }
+	if chat == nil {
+		if !opts.allowExtract {
+			return nil, ErrAnswerUnavailable
+		}
+		return &AskResult{Answer: ExtractiveAnswer(question, hits), Status: "ok", Citations: citations, Mode: string(ModeHybrid), AnswerSource: SourceExtract}, nil
+	}
 	answer, err := chat.Complete(ctx, systemPrompt(), userPrompt(question, history, hits))
-	if err != nil { return nil, fmt.Errorf("%w: %v", ErrAnswerUnavailable, err) }
-	if strings.TrimSpace(answer) == "" { return nil, ErrAnswerUnavailable }
-	return &AskResult{Answer: answer, Status: "ok", Citations: citations, Mode: string(ModeHybrid)}, nil
+	if err == nil && strings.TrimSpace(answer) != "" {
+		return &AskResult{Answer: answer, Status: "ok", Citations: citations, Mode: string(ModeHybrid), AnswerSource: SourceChatGateway}, nil
+	}
+	if !opts.allowExtract {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrAnswerUnavailable, err)
+		}
+		return nil, ErrAnswerUnavailable
+	}
+	return &AskResult{Answer: ExtractiveAnswer(question, hits), Status: "ok", Citations: citations, Mode: string(ModeHybrid), AnswerSource: SourceExtract}, nil
+}
+
+// ExtractiveAnswer 在对话网关不可用时给出「摘录式」回答。
+// 它只把已经命中的切片原文按顺序编号列出，不做总结、不补充资料之外的信息，
+// 因此依旧满足「可追溯、不编造」；页面会注明这不是模型生成的结论。
+func ExtractiveAnswer(question string, hits []Hit) string {
+	var b strings.Builder
+	b.WriteString("未连接对话网关，以下按原文摘录资料中的相关段落（未作改写、未补充资料之外的内容）：\n\n")
+	for i, h := range hits {
+		title := h.MaterialTitle
+		if title == "" {
+			title = "未命名材料"
+		}
+		body := strings.TrimSpace(h.Snippet)
+		runes := []rune(body)
+		if len(runes) > 160 {
+			body = string(runes[:160]) + "……"
+		}
+		b.WriteString(fmt.Sprintf("[%d] 《%s》第 %d 段（字符 %d–%d）\n%s\n\n", i+1, title, h.ChunkIndex+1, h.StartOffset, h.EndOffset, body))
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // systemPrompt 由服务端写入，约束模型只依据编号对应的资料作答。
@@ -97,7 +153,9 @@ func userPrompt(question string, history []Turn, hits []Hit) string {
 	if len(history) > 0 {
 		b.WriteString("此前的对话（仅供理解上下文，不作为依据）：\n")
 		for _, t := range history {
-			if t.Role != "user" && t.Role != "assistant" { continue }
+			if t.Role != "user" && t.Role != "assistant" {
+				continue
+			}
 			b.WriteString(fmt.Sprintf("%s：%s\n", t.Role, strings.TrimSpace(t.Content)))
 		}
 		b.WriteString("\n")

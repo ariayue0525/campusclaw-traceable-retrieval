@@ -45,7 +45,8 @@ export type Citation = {
 
 export type AskTurn = { role:'user'|'assistant'; content:string }
 
-export type AskResult = { answer:string; status:string; citations:Citation[]; mode:string }
+/** answer_source 区分回答来自对话网关（chat_gateway）还是服务端原文摘录（extract）。 */
+export type AskResult = { answer:string; status:string; citations:Citation[]; mode:string; answer_source?:string }
 
 /** MySQL 一侧的切片标识。 */
 export type MySQLRef = { chunk_id:number; knowledge_entry_id:number; material_id:number; class_id:number }

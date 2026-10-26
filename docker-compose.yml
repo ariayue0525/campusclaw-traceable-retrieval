@@ -84,7 +84,9 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-    networks: [internal]
+    # internal 网络被标记为 internal: true，容器内不允许任何出网流量。
+    # 对话/嵌入网关在公网，因此 api 必须同时挂到 edge 上才能连出去。
+    networks: [edge, internal]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
       interval: 10s
