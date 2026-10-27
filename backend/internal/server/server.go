@@ -74,6 +74,11 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /api/search",s.requireAuth(http.HandlerFunc(s.search)))
 	s.mux.Handle("POST /api/ask",s.requireAuth(http.HandlerFunc(s.ask)))
 	s.agentRoutes()
+	s.skillRoutes()
+	s.templateRoutes()
+	s.conversationRoutes()
+	s.mcpRoutes()
+	s.swaggerRoutes()
 }
 
 func (s *Server) securityHeaders(next http.Handler) http.Handler { return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){

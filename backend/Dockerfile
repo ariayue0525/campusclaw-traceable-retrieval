@@ -14,6 +14,17 @@ FROM deps AS build
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/campusclaw ./cmd/server
 
+FROM deps AS mcp-build
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/campusclaw-mcp ./cmd/mcp-server
+
+FROM alpine:3.22 AS mcp-runtime
+RUN addgroup -S app && adduser -S -G app app
+USER app
+COPY --from=mcp-build /out/campusclaw-mcp /usr/local/bin/campusclaw-mcp
+EXPOSE 8091
+ENTRYPOINT ["campusclaw-mcp"]
+
 FROM alpine:3.22 AS runtime
 RUN addgroup -S app && adduser -S -G app app && mkdir -p /data/uploads && chown -R app:app /data
 USER app

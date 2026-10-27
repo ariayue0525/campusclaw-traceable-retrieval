@@ -177,6 +177,18 @@ func (s *Service) IndexMaterial(ctx context.Context, ref store.EntryRef, body st
 
 // Search 在会话班级范围内执行检索。
 func (s *Service) Search(ctx context.Context, classID int64, query string, mode Mode, limit, offset int) (*Result, error) {
+	return s.search(ctx,classID,nil,query,mode,limit,offset)
+}
+
+// SearchScoped performs every candidate path against the same non-empty
+// material allow-list. Empty means no authorized evidence, not a global search.
+func (s *Service) SearchScoped(ctx context.Context,classID int64,materialIDs []int64,query string,mode Mode,limit,offset int)(*Result,error){
+	if materialIDs==nil{materialIDs=[]int64{}}
+	if limit>4{limit=4}
+	return s.search(ctx,classID,materialIDs,query,mode,limit,offset)
+}
+
+func (s *Service) search(ctx context.Context,classID int64,materialIDs []int64,query string,mode Mode,limit,offset int)(*Result,error){
 	query = strings.TrimSpace(query)
 	if query == "" { return nil, ErrBadQuery }
 	if limit < 1 { limit = s.cfg.SearchLimit }
@@ -184,29 +196,30 @@ func (s *Service) Search(ctx context.Context, classID int64, query string, mode 
 	if offset < 0 { offset = 0 }
 
 	result := &Result{Mode: string(mode), Query: query, Hits: []Hit{}, Total: 0, Collection: s.vectors.Collection(), Embedder: s.embedder.Kind()}
+	if materialIDs!=nil&&len(materialIDs)==0{result.Status="no_evidence";result.Message=NoEvidenceMessage;return result,nil}
 
 	var keyword []ranked
 	var vectorHits []ranked
 	var chunksByID map[int64]model.Chunk
 	switch mode {
 	case ModeKeyword:
-		keyword = s.keywordPath(ctx, classID, query, limit+offset)
-		chunksByID = loadChunks(ctx, s.store, classID, keyword)
+		keyword = s.keywordPath(ctx, classID,materialIDs, query, limit+offset)
+		chunksByID = loadChunks(ctx, s.store, classID,materialIDs, keyword)
 	case ModeVector:
 		var err error
-		vectorHits, chunksByID, result.QueryVector, err = s.vectorPath(ctx, classID, query, limit+offset)
+		vectorHits, chunksByID, result.QueryVector, err = s.vectorPath(ctx, classID,materialIDs, query, limit+offset)
 		if err != nil { return nil, err }
 	case ModeHybrid:
-		keyword = s.keywordPath(ctx, classID, query, limit+offset)
+		keyword = s.keywordPath(ctx, classID,materialIDs, query, limit+offset)
 		var err error
-		vectorHits, chunksByID, result.QueryVector, err = s.vectorPath(ctx, classID, query, limit+offset)
+		vectorHits, chunksByID, result.QueryVector, err = s.vectorPath(ctx, classID,materialIDs, query, limit+offset)
 		if err != nil { return nil, err }
 	}
 
 	// 回表闭包在这里捕获班级编号：后续任何一次取正文、取标题都带同一个班级条件。
 	lk := lookups{
 		chunks: func(ctx context.Context, ids []int64) (map[int64]model.Chunk, error) {
-			list, err := s.store.ChunksByIDs(ctx, classID, ids)
+			list, err := s.store.ChunksByIDsScoped(ctx, classID,materialIDs, ids)
 			if err != nil { return nil, err }
 			out := make(map[int64]model.Chunk, len(list))
 			for _, c := range list { out[c.ID] = c }
@@ -242,23 +255,23 @@ type ranked struct {
 	rank  int
 }
 
-func (s *Service) keywordPath(ctx context.Context, classID int64, query string, limit int) []ranked {
-	rows, err := s.store.KeywordSearch(ctx, classID, query, limit)
+func (s *Service) keywordPath(ctx context.Context, classID int64,materialIDs []int64, query string, limit int) []ranked {
+	rows, err := s.store.KeywordSearchScoped(ctx, classID,materialIDs, query, limit)
 	if err != nil { return nil }
 	out := make([]ranked, 0, len(rows))
 	for i, r := range rows { out = append(out, ranked{id: r.Chunk.ID, score: r.Score, rank: i + 1}) }
 	return out
 }
 
-func (s *Service) vectorPath(ctx context.Context, classID int64, query string, limit int) ([]ranked, map[int64]model.Chunk, []float32, error) {
+func (s *Service) vectorPath(ctx context.Context, classID int64,materialIDs []int64, query string, limit int) ([]ranked, map[int64]model.Chunk, []float32, error) {
 	vecs, err := s.embedder.Embed(ctx, []string{query})
 	if err != nil || len(vecs) == 0 { return nil, nil, nil, ErrVectorUnavailable }
 	queryVector := vecs[0]
-	matches, err := s.vectors.Search(ctx, classID, queryVector, s.cfg.VectorCandidates, s.cfg.VectorMinScore)
+	matches, err := s.vectors.SearchScoped(ctx, classID,materialIDs, queryVector, s.cfg.VectorCandidates, s.cfg.VectorMinScore)
 	if err != nil { return nil, nil, queryVector, ErrVectorUnavailable }
 	ids := make([]int64, 0, len(matches))
 	for _, m := range matches { ids = append(ids, m.ID) }
-	chunks, err := s.store.ChunksByIDs(ctx, classID, ids)
+	chunks, err := s.store.ChunksByIDsScoped(ctx, classID,materialIDs, ids)
 	if err != nil { return nil, nil, queryVector, err }
 	byID := make(map[int64]model.Chunk, len(chunks))
 	for _, c := range chunks { byID[c.ID] = c }
@@ -273,10 +286,10 @@ func (s *Service) vectorPath(ctx context.Context, classID int64, query string, l
 	return out, byID, queryVector, nil
 }
 
-func loadChunks(ctx context.Context, st *store.Store, classID int64, list []ranked) map[int64]model.Chunk {
+func loadChunks(ctx context.Context, st *store.Store, classID int64,materialIDs []int64, list []ranked) map[int64]model.Chunk {
 	ids := make([]int64, 0, len(list))
 	for _, r := range list { ids = append(ids, r.id) }
-	chunks, err := st.ChunksByIDs(ctx, classID, ids)
+	chunks, err := st.ChunksByIDsScoped(ctx, classID,materialIDs, ids)
 	if err != nil { return map[int64]model.Chunk{} }
 	byID := make(map[int64]model.Chunk, len(chunks))
 	for _, c := range chunks { byID[c.ID] = c }

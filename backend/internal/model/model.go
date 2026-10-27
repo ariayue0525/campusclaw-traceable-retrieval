@@ -59,11 +59,54 @@ type TutorAgent struct {
 	ClassID     int64     `json:"class_id"`
 	Name        string    `json:"name"`
 	Prompt      string    `json:"prompt"`
+	PromptTemplateID *int64 `json:"prompt_template_id,omitempty"`
 	Enabled     bool      `json:"enabled"`
 	SkillIDs    []int64   `json:"skill_ids"`
 	MaterialIDs []int64   `json:"material_ids"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+type PromptTemplate struct {
+	ID int64 `json:"id"`
+	ClassID int64 `json:"class_id"`
+	Name string `json:"name"`
+	Content string `json:"content"`
+	Enabled bool `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MCPServer struct {
+	ID int64 `json:"id"`
+	ClassID int64 `json:"class_id"`
+	Name string `json:"name"`
+	BaseURL string `json:"base_url"`
+	TokenEnvKey string `json:"-"`
+	HasToken bool `json:"has_token"`
+	Connected bool `json:"connected"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type MCPTool struct {
+	ID int64 `json:"id"`
+	ServerID int64 `json:"server_id"`
+	Name string `json:"name"`
+	Description string `json:"description"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+type MCPCall struct {
+	ID int64 `json:"id"`
+	ClassID int64 `json:"class_id"`
+	UserID int64 `json:"user_id"`
+	ConversationID *int64 `json:"conversation_id,omitempty"`
+	ServerID int64 `json:"server_id"`
+	ToolName string `json:"tool_name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type Skill struct {

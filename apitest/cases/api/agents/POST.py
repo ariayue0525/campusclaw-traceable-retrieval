@@ -4,6 +4,10 @@ def run(c):
     student_b = c.values["student_b"]["access_token"]
     class_a = c.values["teacher"]["user"]["classId"]
     class_b = c.values["student_b"]["user"]["classId"]
+    for token,class_id in ((student_a,class_a),(student_b,class_b)):
+        status,_,builtins=c.request("GET","/api/agents",token=token)
+        assert status==200 and {"启发式解题助手","概念讲解助手"}.issubset({a["name"] for a in builtins["agents"]})
+        assert c.db_scalar(f"SELECT COUNT(*) FROM tutor_agents WHERE class_id={class_id} AND name IN ('启发式解题助手','概念讲解助手');") == "2"
     skill_a = int(c.db_scalar(f"SELECT id FROM skills WHERE class_id={class_a} ORDER BY id LIMIT 1;"))
     material_a = int(c.db_scalar(f"SELECT id FROM materials WHERE class_id={class_a} ORDER BY id LIMIT 1;"))
     material_b = int(c.db_scalar(f"SELECT id FROM materials WHERE class_id={class_b} ORDER BY id LIMIT 1;"))

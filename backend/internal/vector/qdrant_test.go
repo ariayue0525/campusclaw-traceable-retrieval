@@ -49,6 +49,22 @@ func TestSearchFiltersByClassAndThreshold(t *testing.T) {
 	if captured["score_threshold"] != 0.35 { t.Fatalf("expected threshold to be sent, got %v", captured["score_threshold"]) }
 }
 
+func TestSearchScopedFiltersMaterialBeforeRanking(t *testing.T){
+	var captured map[string]any
+	server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		_ = json.NewDecoder(r.Body).Decode(&captured)
+		_,_ = w.Write([]byte(`{"result":[]}`))
+	}));defer server.Close()
+	s:=New(server.URL,"chunks",0)
+	if _,err:=s.SearchScoped(context.Background(),1,[]int64{10,11},[]float32{1},4,0.2);err!=nil{t.Fatal(err)}
+	must:=captured["filter"].(map[string]any)["must"].([]any)
+	if len(must)!=2{t.Fatalf("expected class and material filters: %+v",must)}
+	material:=must[1].(map[string]any)
+	if material["key"]!="material_id"{t.Fatalf("missing material filter: %+v",material)}
+	anyIDs:=material["match"].(map[string]any)["any"].([]any)
+	if len(anyIDs)!=2||anyIDs[0]!=float64(10)||anyIDs[1]!=float64(11){t.Fatalf("wrong allow-list %+v",anyIDs)}
+}
+
 func TestSearchReportsUnavailableOnServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -1,4 +1,5 @@
-import type { AskResult, AskTurn, ChunkOptions, ChunkVectorsResponse, Material, ReindexResult, SearchMode, SearchResult, User } from './types'
+import type { Agent, AskResult, AskTurn, ChatMessage, ChunkOptions, ChunkVectorsResponse, Conversation, MCPCall, MCPServer, MCPTool, Material, PromptTemplate, ReindexResult, SearchMode, SearchResult, Skill, User } from './types'
+import { SSEDecoder, type SSEEvent } from './sse'
 
 export class ApiError extends Error { constructor(public status:number, message:string){ super(message) } }
 
@@ -81,6 +82,40 @@ export const api={
   // 检索与问答：请求体里不带班级编号，班级边界由服务端按登录身份判定。
   search:(q:string,mode:SearchMode,limit=10)=>request<SearchResult>('/api/search',{method:'POST',body:JSON.stringify({q,mode,limit})}),
   ask:(q:string,history:AskTurn[])=>request<AskResult>('/api/ask',{method:'POST',body:JSON.stringify({q,history})}),
+
+  agents:()=>request<{agents:Agent[]}>('/api/agents'),
+  saveAgent:(value:Pick<Agent,'name'|'prompt'|'prompt_template_id'|'enabled'|'skill_ids'|'material_ids'>,id?:number)=>request<{agent:Agent}>(id?`/api/agents/${id}`:'/api/agents',{method:id?'PUT':'POST',body:JSON.stringify(value)}),
+  skills:()=>request<{skills:Skill[]}>('/api/skills'),
+  saveSkill:(source_text:string,id?:number)=>request<{skill:Skill}>(id?`/api/skills/${id}`:'/api/skills',{method:id?'PUT':'POST',body:JSON.stringify({source_text})}),
+  uploadSkill:(file:File)=>{const form=new FormData();form.append('file',file);return request<{skill:Skill}>('/api/skills',{method:'POST',body:form})},
+  templates:()=>request<{templates:PromptTemplate[]}>('/api/prompt-templates'),
+  saveTemplate:(value:Pick<PromptTemplate,'name'|'content'|'enabled'>,id?:number)=>request<{template:PromptTemplate}>(id?`/api/prompt-templates/${id}`:'/api/prompt-templates',{method:id?'PUT':'POST',body:JSON.stringify(value)}),
+  conversations:()=>request<{conversations:Conversation[]}>('/api/conversations'),
+  createConversation:(agent_id:number)=>request<{conversation:Conversation}>('/api/conversations',{method:'POST',body:JSON.stringify({agent_id})}),
+  messages:(id:number)=>request<{messages:ChatMessage[]}>(`/api/conversations/${id}/messages`),
+  mcpServers:()=>request<{servers:MCPServer[]}>('/api/mcp/servers'),
+  saveMCPServer:(value:{name:string;base_url:string},id?:number)=>request<{server:MCPServer}>(id?`/api/mcp/servers/${id}`:'/api/mcp/servers',{method:id?'PUT':'POST',body:JSON.stringify(value)}),
+  connectMCPServer:(id:number)=>request<{server:MCPServer;tools:MCPTool[]}>(`/api/mcp/servers/${id}/connect`,{method:'POST'}),
+  disconnectMCPServer:(id:number)=>request<{connected:boolean}>(`/api/mcp/servers/${id}/disconnect`,{method:'POST'}),
+  mcpTools:(id:number)=>request<{tools:MCPTool[]}>(`/api/mcp/servers/${id}/tools`),
+  mcpAudit:()=>request<{calls:MCPCall[]}>('/api/mcp/audit'),
+
+  async streamMessage(id:number,content:string,onEvent:(event:SSEEvent)=>void,signal?:AbortSignal){
+    const send=()=>fetch(`${BASE}/api/conversations/${id}/messages/stream`,{method:'POST',headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify({content}),signal})
+    let response=await send()
+    if(response.status===401&&await refreshTokens())response=await send()
+    if(!response.ok){let message=`请求失败（${response.status}）`;try{message=(await response.json()).error||message}catch{};throw new ApiError(response.status,message)}
+    if(!response.body)throw new Error('浏览器不支持流式回复')
+    const reader=response.body.getReader(),decoder=new TextDecoder(),parser=new SSEDecoder()
+    let done=false
+    try{
+      while(true){const part=await reader.read();if(part.done)break
+        for(const event of parser.push(decoder.decode(part.value,{stream:true}))){onEvent(event);if(event.event==='done'||event.event==='error')done=true}
+      }
+      for(const event of parser.push(decoder.decode())){onEvent(event);if(event.event==='done'||event.event==='error')done=true}
+    }finally{reader.releaseLock()}
+    if(!done)throw new Error('连接中断：回答未确认保存，请重试')
+  },
 
   // 切片与向量的对照视图，以及按策略重建索引。
   chunkVectors:(id:number)=>request<ChunkVectorsResponse>(`/api/materials/${id}/vectors`),

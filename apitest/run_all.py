@@ -13,7 +13,14 @@ ROOT = pathlib.Path(__file__).resolve().parent
 ORDER = [
     "cases/db/schema/CHECK.py",
     "cases/api/login/POST.py",
+    "cases/api/search/POST.py",
     "cases/api/agents/POST.py",
+    "cases/api/skills/POST.py",
+    "cases/api/prompt-templates/POST.py",
+    "cases/api/conversations/POST.py",
+    "cases/api/conversations/STREAM.py",
+    "cases/api/mcp/POST.py",
+    "cases/api/swagger/GET.py",
 ]
 
 
@@ -46,7 +53,7 @@ def main():
         print(f"{state:4} {relative} — {detail}")
     report = ROOT / "report.html"
     body = "".join(f"<tr class='{s.lower()}'><td>{html.escape(p)}</td><td>{s}</td><td>{d:.3f}s</td><td><pre>{html.escape(str(x))}</pre></td></tr>" for p,s,d,x in rows)
-    report.write_text(f"<!doctype html><meta charset='utf-8'><title>CampusClaw Agent Foundation Test Report</title><style>body{{font:14px system-ui;margin:30px}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ddd;padding:8px;vertical-align:top}}.pass td:nth-child(2){{color:green}}.fail td:nth-child(2){{color:#b00}}.skip td:nth-child(2){{color:#986f0b}}pre{{white-space:pre-wrap;margin:0}}</style><h1>第 5 课数据层与智能体管理测试</h1><p>{time.strftime('%Y-%m-%d %H:%M:%S')}</p><table><tr><th>测试脚本</th><th>结果</th><th>耗时</th><th>断言/错误</th></tr>{body}</table>", encoding="utf-8")
+    report.write_text(f"<!doctype html><meta charset='utf-8'><title>CampusClaw AI Platform API Test Report</title><style>body{{font:14px system-ui;margin:30px}}table{{border-collapse:collapse;width:100%}}td,th{{border:1px solid #ddd;padding:8px;vertical-align:top}}.pass td:nth-child(2){{color:green}}.fail td:nth-child(2){{color:#b00}}.skip td:nth-child(2){{color:#986f0b}}pre{{white-space:pre-wrap;margin:0}}</style><h1>CampusClaw AI 平台接口验收</h1><p>{time.strftime('%Y-%m-%d %H:%M:%S')}</p><table><tr><th>测试脚本</th><th>结果</th><th>耗时</th><th>断言/错误</th></tr>{body}</table>", encoding="utf-8")
     failures = sum(1 for _, state, _, _ in rows if state == "FAIL")
     print(f"报告：{report}；通过 {sum(1 for _,s,_,_ in rows if s=='PASS')}，跳过 {sum(1 for _,s,_,_ in rows if s=='SKIP')}，失败 {failures}")
     raise SystemExit(1 if failures else 0)

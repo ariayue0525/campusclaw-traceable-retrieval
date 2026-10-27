@@ -12,11 +12,11 @@ import (
 
 var ErrConflict = errors.New("conflict")
 
-const agentColumns = `a.id,a.class_id,a.name,a.prompt,a.enabled,a.created_at,a.updated_at`
+const agentColumns = `a.id,a.class_id,a.name,a.prompt,a.enabled,a.created_at,a.updated_at,a.prompt_template_id`
 
 func scanAgent(scan func(...any) error) (model.TutorAgent, error) {
 	var a model.TutorAgent
-	err := scan(&a.ID, &a.ClassID, &a.Name, &a.Prompt, &a.Enabled, &a.CreatedAt, &a.UpdatedAt)
+	err := scan(&a.ID, &a.ClassID, &a.Name, &a.Prompt, &a.Enabled, &a.CreatedAt, &a.UpdatedAt, &a.PromptTemplateID)
 	a.SkillIDs, a.MaterialIDs = []int64{}, []int64{}
 	return a, err
 }
@@ -95,6 +95,24 @@ func (s *Store) loadAgentBindings(ctx context.Context, a *model.TutorAgent) erro
 	return rows.Err()
 }
 
+func (s *Store) BoundSkills(ctx context.Context,classID,agentID int64)([]model.Skill,error){
+	rows,err:=s.DB.QueryContext(ctx,`SELECT `+skillColumns+` FROM skills WHERE class_id=? AND enabled=TRUE AND id IN (SELECT skill_id FROM tutor_agent_skills WHERE agent_id=?) ORDER BY id`,classID,agentID)
+	if err!=nil{return nil,err};defer rows.Close()
+	out:=[]model.Skill{}
+	for rows.Next(){item,err:=scanSkill(rows.Scan);if err!=nil{return nil,err};out=append(out,item)}
+	return out,rows.Err()
+}
+
+// AgentMaterialIDs resolves the authorization set before any retrieval path.
+// Subject limits the set by material title; it is never applied after search.
+func (s *Store) AgentMaterialIDs(ctx context.Context,classID,agentID int64,subject string)([]int64,error){
+	rows,err:=s.DB.QueryContext(ctx,`SELECT m.id FROM tutor_agent_materials b JOIN tutor_agents a ON a.id=b.agent_id JOIN materials m ON m.id=b.material_id WHERE a.id=? AND a.class_id=? AND m.class_id=? AND (?='' OR INSTR(m.title,?)>0) ORDER BY m.id`,agentID,classID,classID,subject,subject)
+	if err!=nil{return nil,err};defer rows.Close()
+	out:=[]int64{}
+	for rows.Next(){var id int64;if err:=rows.Scan(&id);err!=nil{return nil,err};out=append(out,id)}
+	return out,rows.Err()
+}
+
 func duplicate(err error) bool {
 	var mysqlErr *mysql.MySQLError
 	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
@@ -115,8 +133,11 @@ func (s *Store) SaveAgent(ctx context.Context, a *model.TutorAgent) error {
 	if err := validateIDsInClass(ctx, tx, `materials`, a.ClassID, a.MaterialIDs); err != nil {
 		return err
 	}
+	if a.PromptTemplateID != nil {
+		if err := validateIDsInClass(ctx, tx, `prompt_templates`, a.ClassID, []int64{*a.PromptTemplateID}); err != nil { return err }
+	}
 	if a.ID == 0 {
-		res, err := tx.ExecContext(ctx, `INSERT INTO tutor_agents(class_id,name,prompt,enabled) VALUES(?,?,?,?)`, a.ClassID, a.Name, a.Prompt, a.Enabled)
+		res, err := tx.ExecContext(ctx, `INSERT INTO tutor_agents(class_id,name,prompt,enabled,prompt_template_id) VALUES(?,?,?,?,?)`, a.ClassID, a.Name, a.Prompt, a.Enabled, a.PromptTemplateID)
 		if duplicate(err) {
 			return ErrConflict
 		}
@@ -136,7 +157,7 @@ func (s *Store) SaveAgent(ctx context.Context, a *model.TutorAgent) error {
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE tutor_agents SET name=?,prompt=?,enabled=? WHERE id=? AND class_id=?`, a.Name, a.Prompt, a.Enabled, a.ID, a.ClassID)
+		_, err = tx.ExecContext(ctx, `UPDATE tutor_agents SET name=?,prompt=?,enabled=?,prompt_template_id=? WHERE id=? AND class_id=?`, a.Name, a.Prompt, a.Enabled, a.PromptTemplateID, a.ID, a.ClassID)
 		if duplicate(err) {
 			return ErrConflict
 		}

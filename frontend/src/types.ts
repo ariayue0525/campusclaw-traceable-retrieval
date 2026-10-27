@@ -101,3 +101,12 @@ export type ChunkOptions = {
   chunk_collapse_ws?:number
   chunk_strip_links?:number
 }
+
+export type Agent = { id:number; class_id:number; name:string; prompt:string; prompt_template_id?:number|null; enabled:boolean; skill_ids:number[]; material_ids:number[]; created_at:string; updated_at:string }
+export type Skill = { id:number; class_id:number; name:string; trigger_text:string; subject_text:string; description:string; tools:string[]; source_text:string; enabled:boolean; created_at:string; updated_at:string }
+export type PromptTemplate = { id:number; class_id:number; name:string; content:string; enabled:boolean }
+export type Conversation = { id:number; class_id:number; user_id:number; agent_id:number; title:string; created_at:string; updated_at:string }
+export type ChatMessage = { id:number; conversation_id:number; role:'user'|'assistant'; content:string; citations:Citation[]; skill_name?:string; created_at:string }
+export type MCPServer = { id:number; class_id:number; name:string; base_url:string; has_token:boolean; connected:boolean }
+export type MCPTool = { id:number; server_id:number; name:string; description:string; input_schema:unknown }
+export type MCPCall = { id:number; server_id:number; tool_name:string; status:string; detail:string; created_at:string }

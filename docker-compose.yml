@@ -30,11 +30,30 @@ services:
       - qdrant_data:/qdrant/storage
     networks: [internal]
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:6333/healthz || exit 1"]
+      # 官方镜像没有 wget；用镜像自带的 bash 做本地 TCP 探针。
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/127.0.0.1/6333"]
       interval: 10s
       timeout: 4s
       retries: 12
       start_period: 20s
+
+  # Opt in after setting an independent MCP_AUTH_TOKEN in the local .env.
+  # The token never appears in Git or in the image and the service is internal.
+  mcp-server:
+    profiles: [mcp]
+    build:
+      context: ./backend
+      target: mcp-runtime
+    restart: unless-stopped
+    environment:
+      MCP_ADDR: :8091
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   api:
     build:
@@ -52,6 +71,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       CHAT_MODEL: ${CHAT_MODEL:-gpt-4o-mini}
       LLM_GATEWAY_TIMEOUT: ${LLM_GATEWAY_TIMEOUT:-20s}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       # 留空时由后端按嵌入实现选择：网关语义嵌入 0.35，本地哈希嵌入 0.15。
       VECTOR_MIN_SCORE: ${VECTOR_MIN_SCORE:-}
       VECTOR_CANDIDATES: ${VECTOR_CANDIDATES:-50}

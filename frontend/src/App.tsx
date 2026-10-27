@@ -5,9 +5,10 @@ import { api, ApiError } from './api'
 import { splitCitations } from './cite'
 import type { AskResult, AskTurn, ChunkOptions, ChunkView, Citation, Hit, Material, SearchMode, SearchResult, User } from './types'
 import { formatBytes, isMarkdown, safeTheme } from './utils'
+import { AssistantPanel, TeacherPanel } from './Platform'
 
 type Toast = { id: number; message: string; kind: 'ok' | 'error' }
-type Tab = 'library' | 'search' | 'ask'
+type Tab = 'library' | 'search' | 'ask' | 'assistant' | 'manage'
 
 const MODE_HINT: Record<SearchMode, { label: string; path: string; desc: string }> = {
   keyword: { label: '关键字', path: 'MySQL 全文索引 → 回表取正文', desc: '只用 MySQL 的 ngram 全文索引匹配，不嵌入、不访问向量库。命中即命中，字面完全一致的片段排在最前。' },
@@ -86,6 +87,8 @@ function Workspace({ user, onLogout, notify }: { user: User; onLogout: () => voi
         <button className={tab === 'library' ? 'nav-active' : ''} onClick={() => setTab('library')}>▦<span>材料库</span><i>{items.length}</i></button>
         <button className={tab === 'search' ? 'nav-active' : ''} onClick={() => setTab('search')}>⌕<span>知识检索</span></button>
         <button className={tab === 'ask' ? 'nav-active' : ''} onClick={() => setTab('ask')}>✦<span>班级问答</span></button>
+        <button className={tab === 'assistant' ? 'nav-active' : ''} onClick={() => setTab('assistant')}>◈<span>AI 解题助手</span></button>
+        {user.role === 'teacher' && <button className={tab === 'manage' ? 'nav-active' : ''} onClick={() => setTab('manage')}>⚙<span>AI 平台管理</span></button>}
       </nav>
       <div className="side-foot">
         <div className="class-card"><span>检索范围</span><b>{user.className}</b><small>{user.role === 'teacher' ? '教师管理权限' : '学生只读权限'}</small></div>
@@ -94,7 +97,7 @@ function Workspace({ user, onLogout, notify }: { user: User; onLogout: () => voi
     </aside>
     <main className="workspace">
       <header className="topbar">
-        <div><p className="eyebrow">{user.className} · TRACEABLE KNOWLEDGE BASE</p><h1>{tab === 'library' ? '教研材料' : tab === 'search' ? '知识检索' : '班级问答'}</h1></div>
+        <div><p className="eyebrow">{user.className} · TRACEABLE KNOWLEDGE BASE</p><h1>{tab === 'library' ? '教研材料' : tab === 'search' ? '知识检索' : tab === 'ask' ? '班级问答' : tab === 'assistant' ? 'AI 解题助手' : 'AI 平台管理'}</h1></div>
         <div className="top-actions"><button className="icon-btn" title="切换主题" onClick={() => setTheme(v => v === 'light' ? 'dark' : 'light')}>{theme === 'light' ? '☾' : '☀'}</button>{user.role === 'teacher' && <button className="primary compact" onClick={() => setUploadOpen(true)}>＋ 上传材料</button>}</div>
       </header>
       {tab === 'library' && <LibraryTab
@@ -104,7 +107,9 @@ function Workspace({ user, onLogout, notify }: { user: User; onLogout: () => voi
       />}
       {tab === 'search' && <SearchTab user={user} notify={notify} onOpen={openMaterial} />}
       {tab === 'ask' && <AskTab user={user} />}
-      <footer><span>CampusClaw · 第 4 课 · 可追溯知识库检索</span><span>正文来自 MySQL · 向量来自 Qdrant · 班级边界由服务端判定</span></footer>
+      {tab === 'assistant' && <AssistantPanel notify={notify} />}
+      {tab === 'manage' && user.role === 'teacher' && <TeacherPanel notify={notify} />}
+      <footer><span>CampusClaw · 教学知识库与 AI 平台</span><span>正文来自 MySQL · 向量来自 Qdrant · 班级边界由服务端判定</span></footer>
     </main>
     {selected && <Detail material={selected} user={user} onClose={() => setSelected(null)} notify={notify} />}
     {uploadOpen && <Upload onClose={() => setUploadOpen(false)} onDone={() => void load()} notify={notify} />}

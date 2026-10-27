@@ -50,8 +50,19 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS tutor_agent_materials (agent_id BIGINT NOT NULL, material_id BIGINT NOT NULL, PRIMARY KEY(agent_id,material_id), FOREIGN KEY(agent_id) REFERENCES tutor_agents(id) ON DELETE CASCADE, FOREIGN KEY(material_id) REFERENCES materials(id) ON DELETE CASCADE) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS conversations (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, user_id BIGINT NOT NULL, agent_id BIGINT NOT NULL, title VARCHAR(100) NOT NULL DEFAULT '新的提问', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY(class_id) REFERENCES classes(id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, FOREIGN KEY(agent_id) REFERENCES tutor_agents(id), INDEX idx_conversations_owner_updated (user_id,class_id,updated_at)) ENGINE=InnoDB`,
 		`CREATE TABLE IF NOT EXISTS messages (id BIGINT PRIMARY KEY AUTO_INCREMENT, conversation_id BIGINT NOT NULL, role ENUM('user','assistant') NOT NULL, content MEDIUMTEXT NOT NULL, citations_json JSON NOT NULL, skill_name VARCHAR(32) NULL, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE, INDEX idx_messages_conversation (conversation_id,id)) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS prompt_templates (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, name VARCHAR(64) NOT NULL, content TEXT NOT NULL, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), CONSTRAINT fk_template_class FOREIGN KEY (class_id) REFERENCES classes(id), UNIQUE KEY uq_template_class_name (class_id,name), UNIQUE KEY uq_template_id_class (id,class_id), INDEX idx_templates_class_enabled (class_id,enabled)) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS mcp_servers (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, name VARCHAR(64) NOT NULL, base_url VARCHAR(512) NOT NULL, token_env_key VARCHAR(128) NOT NULL, connected BOOLEAN NOT NULL DEFAULT FALSE, created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), CONSTRAINT fk_mcp_server_class FOREIGN KEY (class_id) REFERENCES classes(id), UNIQUE KEY uq_mcp_server_class_name (class_id,name), INDEX idx_mcp_servers_class_connected (class_id,connected)) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS mcp_tools (id BIGINT PRIMARY KEY AUTO_INCREMENT, server_id BIGINT NOT NULL, name VARCHAR(128) NOT NULL, description TEXT NOT NULL, input_schema JSON NOT NULL, discovered_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), CONSTRAINT fk_mcp_tool_server FOREIGN KEY (server_id) REFERENCES mcp_servers(id) ON DELETE CASCADE, UNIQUE KEY uq_mcp_tool_server_name (server_id,name)) ENGINE=InnoDB`,
+		`CREATE TABLE IF NOT EXISTS mcp_tool_calls (id BIGINT PRIMARY KEY AUTO_INCREMENT, class_id BIGINT NOT NULL, user_id BIGINT NOT NULL, conversation_id BIGINT NULL, server_id BIGINT NOT NULL, tool_name VARCHAR(128) NOT NULL, status ENUM('success','refused','error') NOT NULL, detail VARCHAR(500) NOT NULL DEFAULT '', created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), CONSTRAINT fk_mcp_call_class FOREIGN KEY (class_id) REFERENCES classes(id), CONSTRAINT fk_mcp_call_user FOREIGN KEY (user_id) REFERENCES users(id), CONSTRAINT fk_mcp_call_conversation FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL, CONSTRAINT fk_mcp_call_server FOREIGN KEY (server_id) REFERENCES mcp_servers(id), INDEX idx_mcp_calls_class_created (class_id,created_at)) ENGINE=InnoDB`,
 	}
 	for _, statement := range statements { if _, err := s.DB.ExecContext(ctx, statement); err != nil { return err } }
+	// MySQL 8.4 does not support ADD COLUMN IF NOT EXISTS. Inspect the catalogue
+	// before altering older installations; never rewrite material/chunk tables.
+	var templateColumnCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='tutor_agents' AND column_name='prompt_template_id'`).Scan(&templateColumnCount); err != nil { return err }
+	if templateColumnCount == 0 {
+		if _, err := s.DB.ExecContext(ctx, `ALTER TABLE tutor_agents ADD COLUMN prompt_template_id BIGINT NULL, ADD CONSTRAINT fk_agent_template_class FOREIGN KEY (prompt_template_id,class_id) REFERENCES prompt_templates(id,class_id)`); err != nil { return err }
+	}
 	return nil
 }
 
@@ -79,10 +90,18 @@ func (s *Store) Seed(ctx context.Context, teacherPass, studentAPass, studentBPas
 	lessonSkill := "名称：数学解题引导\n适用条件：方程,去括号,分数,通分,面积,应用题,未知数,行程\n资料：数学\n工具：knowledge_search\n启用：是\n\n先看懂学生卡在哪一步，只指出下一步该检查什么。不要给出最终答案、选项、得数或完整解题过程；用问题引导学生自己完成。"
 	for _, classID := range []int64{aID, bID} {
 		seedKey := fmt.Sprintf("lesson5-guidance-%d", classID)
+		if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO prompt_templates(class_id,name,content,enabled) VALUES(?,'启发式导师模板','你是{{class_name}}的导师。请用问题引导{{student_name}}独立思考，不直接给出最终答案。',TRUE)`, classID); err != nil { return err }
 		if _, err = tx.ExecContext(ctx, `INSERT INTO skills(class_id,name,trigger_text,subject_text,description,tools_json,source_text,enabled,seed_key) VALUES(?,'数学解题引导','方程,去括号,分数,通分,面积,应用题,未知数,行程','数学','先看懂学生卡在哪一步，只指出下一步该检查什么。不要给出最终答案、选项、得数或完整解题过程；用问题引导学生自己完成。',JSON_ARRAY('knowledge_search'),?,TRUE,?) ON DUPLICATE KEY UPDATE seed_key=VALUES(seed_key)`, classID, lessonSkill, seedKey); err != nil { return err }
 		if _, err = tx.ExecContext(ctx, `INSERT INTO tutor_agents(class_id,name,prompt,enabled) VALUES(?,'启发式解题助手','你是一名耐心的教学助手，优先用提问帮助学生自己发现思路。',TRUE) ON DUPLICATE KEY UPDATE name=VALUES(name)`, classID); err != nil { return err }
 		if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO tutor_agent_skills(agent_id,skill_id) SELECT a.id,s.id FROM tutor_agents a JOIN skills s ON s.class_id=a.class_id WHERE a.class_id=? AND a.name='启发式解题助手' AND s.seed_key=?`, classID, seedKey); err != nil { return err }
 		if _, err = tx.ExecContext(ctx, `INSERT IGNORE INTO tutor_agent_materials(agent_id,material_id) SELECT a.id,m.id FROM tutor_agents a JOIN materials m ON m.class_id=a.class_id WHERE a.class_id=? AND a.name='启发式解题助手'`, classID); err != nil { return err }
+		// 第二种内置应用强调概念解释，和解题引导有不同角色设定。
+		// 仅在首次创建时绑定现有材料；后续重启不覆盖教师对它的启停、提示词或材料绑定。
+		created, e := tx.ExecContext(ctx, `INSERT IGNORE INTO tutor_agents(class_id,name,prompt,enabled) VALUES(?,'概念讲解助手','你是清晰、耐心的概念讲解助手。先解释关键词与核心原理，再用本班资料中的例子帮助学生理解；资料没有依据时不要编造引用。',TRUE)`, classID)
+		if e != nil { return e }
+		if n, e := created.RowsAffected(); e != nil { return e } else if n > 0 {
+			if _, e = tx.ExecContext(ctx, `INSERT IGNORE INTO tutor_agent_materials(agent_id,material_id) SELECT a.id,m.id FROM tutor_agents a JOIN materials m ON m.class_id=a.class_id WHERE a.class_id=? AND a.name='概念讲解助手'`, classID); e != nil { return e }
+		}
 	}
 	return tx.Commit()
 }
@@ -305,12 +324,24 @@ func chunkSelect(rows *sql.Rows) ([]model.Chunk, error) {
 
 // ChunksByIDs 按主键回表取回切片正文；班级条件在这里再次核对，避免只靠向量库过滤。
 func (s *Store) ChunksByIDs(ctx context.Context, classID int64, ids []int64) ([]model.Chunk, error) {
+	return s.ChunksByIDsScoped(ctx,classID,nil,ids)
+}
+
+// ChunksByIDsScoped is the final authorization check for agent retrieval. A
+// non-nil material set also requires ready chunks; an empty set returns none.
+func (s *Store) ChunksByIDsScoped(ctx context.Context,classID int64,materialIDs,ids []int64)([]model.Chunk,error){
 	if len(ids) == 0 { return []model.Chunk{}, nil }
+	if materialIDs!=nil&&len(materialIDs)==0{return []model.Chunk{},nil}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
 	args := make([]any, 0, len(ids)+1)
 	args = append(args, classID)
 	for _, id := range ids { args = append(args, id) }
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+chunkColumns+` FROM knowledge_chunks WHERE class_id=? AND id IN (`+placeholders+`)`, args...)
+	query:=`SELECT `+chunkColumns+` FROM knowledge_chunks WHERE class_id=? AND id IN (`+placeholders+`)`
+	if materialIDs!=nil{
+		query+=` AND index_status='ready' AND material_id IN (`+strings.TrimRight(strings.Repeat("?,",len(materialIDs)),",")+`)`
+		for _,id:=range materialIDs{args=append(args,id)}
+	}
+	rows, err := s.DB.QueryContext(ctx,query,args...)
 	if err != nil { return nil, err }
 	return chunkSelect(rows)
 }
@@ -331,12 +362,21 @@ type KeywordRow struct {
 // KeywordSearch 只查 MySQL 全文索引：限定本班且仅检索已就绪切片。
 // 它不调用嵌入服务，也不访问 Qdrant。
 func (s *Store) KeywordSearch(ctx context.Context, classID int64, query string, limit int) ([]KeywordRow, error) {
+	return s.KeywordSearchScoped(ctx,classID,nil,query,limit)
+}
+
+func (s *Store) KeywordSearchScoped(ctx context.Context,classID int64,materialIDs []int64,query string,limit int)([]KeywordRow,error){
 	if limit < 1 { limit = 10 }
-	rows, err := s.DB.QueryContext(ctx,
-		`SELECT `+chunkColumns+`, MATCH(chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS score
-		 FROM knowledge_chunks
-		 WHERE class_id=? AND index_status='ready' AND MATCH(chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE)
-		 ORDER BY score DESC, id ASC LIMIT ?`, query, classID, query, limit)
+	if materialIDs!=nil&&len(materialIDs)==0{return []KeywordRow{},nil}
+	statement:=`SELECT `+chunkColumns+`, MATCH(chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE) AS score FROM knowledge_chunks WHERE class_id=? AND index_status='ready' AND MATCH(chunk_text) AGAINST (? IN NATURAL LANGUAGE MODE)`
+	args:=[]any{query,classID,query}
+	if materialIDs!=nil{
+		statement+=` AND material_id IN (`+strings.TrimRight(strings.Repeat("?,",len(materialIDs)),",")+`)`
+		for _,id:=range materialIDs{args=append(args,id)}
+	}
+	statement+=` ORDER BY score DESC,id ASC LIMIT ?`
+	args=append(args,limit)
+	rows, err := s.DB.QueryContext(ctx,statement,args...)
 	if err != nil { return nil, err }
 	defer rows.Close()
 	out := []KeywordRow{}

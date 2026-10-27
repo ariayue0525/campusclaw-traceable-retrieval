@@ -81,7 +81,7 @@ func main() {
 	backfillCancel()
 
 	app := server.New(cfg, db, svc, vectors, chatClient)
-	httpServer := &http.Server{Addr: cfg.Addr, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 40 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 60 * time.Second}
+	httpServer := &http.Server{Addr: cfg.Addr, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 40 * time.Second, WriteTimeout: 180 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
 		log.Printf("CampusClaw API listening on %s", cfg.Addr)
 		if e := httpServer.ListenAndServe(); e != nil && e != http.ErrServerClosed {

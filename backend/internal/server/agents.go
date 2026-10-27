@@ -67,6 +67,7 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 type agentRequest struct {
 	Name        string  `json:"name"`
 	Prompt      string  `json:"prompt"`
+	PromptTemplateID *int64 `json:"prompt_template_id"`
 	Enabled     bool    `json:"enabled"`
 	SkillIDs    []int64 `json:"skill_ids"`
 	MaterialIDs []int64 `json:"material_ids"`
@@ -85,6 +86,7 @@ func validateAgentRequest(in agentRequest) error {
 	if duplicateID(in.SkillIDs) || duplicateID(in.MaterialIDs) {
 		return errors.New("绑定编号不能重复")
 	}
+	if in.PromptTemplateID != nil && *in.PromptTemplateID < 1 { return errors.New("模板编号无效") }
 	return nil
 }
 
@@ -113,7 +115,7 @@ func (s *Server) saveAgent(w http.ResponseWriter, r *http.Request, id int64) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	item := model.TutorAgent{ID: id, ClassID: u.ClassID, Name: strings.TrimSpace(in.Name), Prompt: strings.TrimSpace(in.Prompt), Enabled: in.Enabled, SkillIDs: in.SkillIDs, MaterialIDs: in.MaterialIDs}
+	item := model.TutorAgent{ID: id, ClassID: u.ClassID, Name: strings.TrimSpace(in.Name), Prompt: strings.TrimSpace(in.Prompt), PromptTemplateID: in.PromptTemplateID, Enabled: in.Enabled, SkillIDs: in.SkillIDs, MaterialIDs: in.MaterialIDs}
 	err := s.store.SaveAgent(r.Context(), &item)
 	switch {
 	case errors.Is(err, store.ErrNotFound):

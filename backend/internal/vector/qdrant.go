@@ -114,15 +114,21 @@ func (s *Store) Upsert(ctx context.Context, points []Point) error {
 
 // Search 按班级过滤做余弦检索，返回分数不低于 minScore 的候选。
 func (s *Store) Search(ctx context.Context, classID int64, query []float32, limit int, minScore float64) ([]Match, error) {
+	return s.SearchScoped(ctx,classID,nil,query,limit,minScore)
+}
+
+// SearchScoped adds the material allow-list to Qdrant's filter before ranking.
+func (s *Store) SearchScoped(ctx context.Context,classID int64,materialIDs []int64,query []float32,limit int,minScore float64)([]Match,error){
+	if materialIDs!=nil&&len(materialIDs)==0{return []Match{},nil}
 	if limit < 1 { limit = 10 }
+	must:=[]map[string]any{{"key":"class_id","match":map[string]any{"value":classID}}}
+	if materialIDs!=nil{must=append(must,map[string]any{"key":"material_id","match":map[string]any{"any":materialIDs}})}
 	payload := map[string]any{
 		"vector":          query,
 		"limit":           limit,
 		"with_payload":    true,
 		"score_threshold": minScore,
-		"filter": map[string]any{
-			"must": []map[string]any{{"key": "class_id", "match": map[string]any{"value": classID}}},
-		},
+		"filter": map[string]any{"must":must},
 	}
 	body, _, err := s.do(ctx, http.MethodPost, "/collections/"+s.collection+"/points/search", payload)
 	if err != nil { return nil, err }
